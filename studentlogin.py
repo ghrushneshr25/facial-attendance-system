@@ -9,6 +9,8 @@ import os
 from datetime import datetime
 import time
 import random
+import shutil
+from PIL import ImageTk, Image
 
 k = 0
 
@@ -333,12 +335,76 @@ class Loggedin:
         self.photoFrame = Frame(self.root, bg="white")
         self.photoFrame.place(x=600, y=200, height=340, width=400)
 
-        self.uploadImageButton = Button(self.photoFrame, text="Upload Image",
-                                        bg="#d77337", fg="white", font=("times new roman", 15), width=10, command=self.uploadImage)
-        self.uploadImageButton.place(x=100, y=300)
+        img = ImageTk.PhotoImage(Image.open(
+            "databaseimages/"+self.roll_no + ".jpg"))
 
-    def uploadImage(self):
-        print("Uploading")
+        self.canvas = Label(self.photoFrame, image=img)
+        self.canvas.place(x=10, y=10)
+
+        self.uploadImageButton = Button(self.photoFrame, text="Upload Image",
+                                        bg="#d77337", fg="white", font=("times new roman", 15), width=10, command=self.clickImage)
+        self.uploadImageButton.place(x=120, y=300)
+
+    def clickImage(self):
+        key = cv2. waitKey(1)
+        webcam = cv2.VideoCapture(0)
+        while True:
+            try:
+                check, frame = webcam.read()
+                cv2.imshow("Capturing", frame)
+                key = cv2.waitKey(1)
+                if key == ord('s'):
+                    fileName = "testimages/"+self.roll_no + ".jpg"
+                    cv2.imwrite(filename=fileName, img=frame)
+                    print("Image saved!")
+                    webcam.release()
+                    self.uploadImage("testimages\\" + self.roll_no+".jpg")
+                    break
+
+                elif key == ord('q'):
+                    webcam.release()
+                    cv2.destroyAllWindows()
+                    break
+
+            except(KeyboardInterrupt):
+                print("Turning off camera.")
+                webcam.release()
+                print("Camera off.")
+                print("Program ended.")
+                cv2.destroyAllWindows()
+                break
+
+        return
+
+    def convertToBinaryData(self, filename):
+        with open(filename, 'rb') as file:
+            binaryData = file.read()
+        return binaryData
+
+    def uploadImage(self, filename):
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                password="abcd1234",
+                database="attendance"
+            )
+            cursor = mydb.cursor()
+            empPicture = self.convertToBinaryData(filename)
+            sql = "UPDATE STUDENT_IMAGES SET studentPhoto = %s WHERE rollno = %s;"
+            sqltuple = (empPicture, self.roll_no)
+            cursor.execute(sql, sqltuple)
+            mydb.commit()
+
+        except mysql.connector.Error as e:
+            print(e)
+            mydb.rollback()
+
+        finally:
+            if mydb is not None:
+                cursor.close()
+                mydb.close()
+
         return
 
     def backpress(self):
@@ -347,24 +413,83 @@ class Loggedin:
         self.create_session_frame.destroy()
         logindisplay = Login(root)
 
+    def write_file(self, data, filename):
+        with open(filename, 'wb') as f:
+            f.write(data)
+
+    def fetchImageDB(self):
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                password="abcd1234",
+                database="attendance"
+            )
+            cursor = mydb.cursor()
+            sql = "SELECT studentPhoto FROM STUDENT_IMAGES WHERE ROLLNO = '"+self.roll_no+"' ;"
+            cursor.execute(sql)
+            photo = cursor.fetchone()[0]
+            filename = "databaseimages\\" + self.roll_no + ".jpg"
+            self.write_file(photo, filename)
+
+        except mysql.connector.Error as e:
+            print(e)
+
+        finally:
+            if mydb is not None:
+                cursor.close()
+                mydb.close()
+
+        return
+
     def session_start(self):
-        path = "testimages"
+        sessionKey = self.s_key.get()
+        if sessionKey == "":
+            messagebox.showerror(
+                "Error", "Please Enter Session key", parent=self.root)
+            return
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                password="abcd1234",
+                database="attendance"
+            )
+
+            cursor = mydb.cursor()
+
+            sql = "SELECT EXISTS(SELECT * FROM SESSIONTABLES WHERE SESSIONID = '"+sessionKey+"');"
+            print(sql)
+            cursor.execute(sql)
+            record = cursor.fetchone()
+            if(record[0] == 0):
+                messagebox.showerror(
+                    "Error", "Please Enter Valid Session key", parent=self.root)
+                return
+
+            cursor.close()
+            cursor = mydb.cursor()
+        except mysql.connector.Error as e:
+            print(e)
+        finally:
+            if mydb is not None:
+                cursor.close()
+                mydb.close()
+
+        self.fetchImageDB()
+        path = "databaseimages"
         images = []
         className = []
-
         myList = os.listdir(path)
-    # print(myList)
+        # print(myList)
         for cl in myList:
             curImg = cv2.imread(f'{path}/{cl}')
             images.append(curImg)
             className.append(os.path.splitext(cl)[0])
 
         encodeListKnown = self.findEncodings(images)
-        print(len(encodeListKnown))
 
-        print("--VIDEO CAMERA ABOUT TO START--")
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        print("-----VIDEO CAMERA STARTED------")
 
         totalFrames, countFrame = 0, 0
 
@@ -393,15 +518,16 @@ class Loggedin:
                     if matches[matchIndex]:
                         countFrame = countFrame + 1
                         rollNo = className[matchIndex].upper()
+                        print(rollNo)
             cv2.imshow("Webcam", img)
-            cv2.waitKey(1)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1)
+            if key == ord('q'):
                 break
         cap.release()
         cv2.destroyAllWindows()
+
         self.markAttendance(
-            self.roll_no, totalFrames, countFrame)
-    # print(className)
+            self.roll_no, totalFrames, countFrame, sessionKey)
 
     def findEncodings(self, images):
         encodeList = []
@@ -412,23 +538,43 @@ class Loggedin:
 
         return encodeList
 
-    def markAttendance(self, rollno, totalFrames, countFrame):
-        if(totalFrames > 5):
-            if(((countFrame/totalFrames)*100) > 90):
-                with open('attendance.csv', 'r+') as f:
-                    myDataList = f.readlines()
-                    rollNoList = []
-                    for line in myDataList:
-                        entry = line.split(",")
-                        rollNoList.append(entry[0])
-                    if rollno not in rollNoList:
-                        now = datetime.now()
-                        dtString = now.strftime("%H:%M:%S")
-                        f.writelines(f'\n{rollno},{dtString}')
+    def markAttendance(self, rollno, totalFrames, countFrame, sessionKey):
+
+        if(totalFrames > 0):
+            if(((countFrame/totalFrames)*100) > 0):
+                print("if statement: ", rollno)
+                print(totalFrames)
+                print(countFrame)
+                print(sessionKey)
+
+                try:
+                    mydb = mysql.connector.connect(
+                        host="localhost",
+                        user="root",
+                        password="abcd1234",
+                        database="attendance"
+                    )
+
+                    cursor = mydb.cursor()
+                    sql = "UPDATE " + sessionKey + \
+                        " SET ATTENDANCESTATUS = 'P' WHERE ROLLNO = '"+rollno+"';"
+                    print(sql)
+                    cursor.execute(sql)
+
+                    mydb.commit()
+
+                except mysql.connector.Error as e:
+                    print(e)
+                finally:
+                    if mydb is not None:
+                        cursor.close()
+                        mydb.close()
+
         return
 
 
 class Loggedin_Faculty:
+    import shutil
 
     def __init__(self, root, username):
         self.username = username
@@ -439,7 +585,7 @@ class Loggedin_Faculty:
         self.backButton.place(x=0, y=0)
 
         self.create_session_frame = Frame(self.root, bg="white")
-        self.create_session_frame.place(x=125, y=100, height=600, width=400)
+        self.create_session_frame.place(x=125, y=50, height=700, width=400)
 
         title = Label(self.create_session_frame, text="Create Session", font=(
             "Impact", 30, "bold"), fg="#5465ff", bg="white")
@@ -531,6 +677,53 @@ class Loggedin_Faculty:
         self.endSessionButton = Button(self.create_session_frame, text="End Session", bg="#d77337", fg="white", font=(
             "times new roman", 10), width=20, command=self.endsession)
         self.endSessionButton.place(x=230, y=540)
+        # ------generaate csv file frame--------------------------------
+        labelcsv = Label(self.create_session_frame, text="Enter the session key to fetch the attendance", font=(
+            "Goudy old style", 15, "bold"), fg="gray", bg="white")
+        labelcsv.place(x=20, y=570)
+        self.csventry = Entry(self.create_session_frame, font=(
+            "times new roman", 20), bg="lightgray")
+        self.csventry.place(x=20, y=600)
+        self.fetchcsv = Button(self.create_session_frame, text="Fetch Attendance", bg="#d77337", fg="white", font=(
+            "times new roman", 15), width=32, command=self.fetch_attendance)
+        self.fetchcsv.place(x=20, y=650)
+
+    def fetch_attendance(self):
+        session_name = self.csventry.get()
+        if session_name == "":
+            messagebox.showerror(
+                "Error", "Invalid Inputs", parent=self.root)
+            return
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                password="abcd1234",
+                database="attendance"
+            )
+
+            cursor = mydb.cursor()
+            sql = "SELECT 'ROLLNO','ATTENDANCE','NAME' UNION SELECT * FROM "+session_name+" INTO  OUTFILE \"C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/" + \
+                session_name+".csv\" fields terminated by ',' lines terminated by '\n';"
+            cursor.execute(sql)
+            cursor.close()
+            mydb.commit()
+            messagebox.showinfo(
+                'SUCCESS', 'csv file generated', parent=self.root)
+
+        except mysql.connector.Error as e:
+            print(e)
+            messagebox.showerror(
+                "Error", "Error Table not found", parent=self.root)
+            mydb.rollback()
+        finally:
+            if mydb is not None:
+                mydb.close()
+        srcname = "C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/"+session_name+".csv"
+        destname = "D:/Facial Attendance System/Project 5-4/Project/attendanceData/" + \
+            session_name+".csv"
+        shutil.copy(srcname, destname)
+        return
 
     def startsession(self):
         sessionKey = self.key.get()
@@ -667,33 +860,6 @@ class Loggedin_Faculty:
             if mydb is not None:
                 mydb.close()
 
-        # self.insertintable(sessionKey, div, year, branch)
-
-        return
-
-    def insertintable(self, sessionKey, div, year, branch):
-        try:
-            mydb = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="abcd1234",
-                database="attendance"
-            )
-
-            insertsql = "INSERT INTO 'attendance'.'%s' (`ROLLNO`, `NAME`) SELECT `ROLLNO`, `NAME` FROM `STUDENTDETAILS` WHERE `DIV` = '%s' AND `YEAR` = '%s' AND `BRANCH` ='`%s';"
-            record3 = (sessionKey, div, year, branch)
-            print("Stage 3 initiated")
-            cursor = mydb.cursor()
-            cursor.execute(insertsql, record3)
-            print("stage 3 cleared")
-            mydb.commit()
-        except mysql.connector.Error as e:
-            print(e)
-            mydb.rollback()
-        finally:
-            if mydb is not None:
-                cursor.close()
-                mydb.close()
         return
 
     def backpress(self):
